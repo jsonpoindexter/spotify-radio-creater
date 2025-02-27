@@ -28,7 +28,7 @@ REDIRECT_URI = os.environ.get('SPOTIFY_REDIRECT_URI')
 if not REDIRECT_URI:
     app.logger.error("SPOTIFY_REDIRECT_URI is not set")
     sys.exit(1)
-SCOPE = os.environ.get('SPOTIFY_SCOPE', 'user-read-playback-state,user-modify-playback-state')
+SCOPE = os.environ.get('SPOTIFY_SCOPE')
 if not SCOPE:
     app.logger.error("SPOTIFY_SCOPE is not set")
     sys.exit(1)
@@ -44,8 +44,7 @@ sp_oauth = SpotifyOAuth(
 # --- OpenAI API Configuration ---
 openai.api_key = os.getenv("OPENAI_API_KEY", os.environ.get('OPENAI_API_KEY'))
 if not openai.api_key:
-    app.logger.error("OPENAI_API_KEY is not set")
-    sys.exit(1)
+    app.logger.info("OPENAI_API_KEY is not set")
 
 def get_spotify_client():
     token_info = sp_oauth.get_cached_token()
