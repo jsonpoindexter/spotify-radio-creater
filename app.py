@@ -1,6 +1,8 @@
 import os
+import random
 import sys
 import logging
+
 from flask import Flask, request, jsonify, redirect
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -55,13 +57,32 @@ def callback():
     token_info = sp_oauth.get_access_token(code)
     return "Logged in successfully – you can now use the /trigger endpoint."
 
-# --- Trigger endpoint ---
 @app.route('/trigger', methods=['POST'])
 def trigger():
+    """
+    Endpoint to trigger a custom shuffled song radio based on the currently playing track.
+
+    This endpoint performs the following steps:
+    1. Retrieves the current playback information from Spotify.
+    2. Extracts the primary artist of the currently playing track.
+    3. Fetches detailed information about the primary artist, including their genres.
+    4. Uses a random genre or the artist's name to perform a search for tracks on Spotify.
+    5. Randomly selects a set of 20 tracks from the search results.
+    6. Shuffles the selected tracks and starts playback with the shuffled list.
+
+    Returns:
+        JSON response containing:
+        - message: Confirmation message indicating the custom radio has started.
+        - seed_track: Name of the currently playing track used as the seed.
+        - seed_artist: Name of the primary artist of the currently playing track.
+        - search_query: The search query used to find related tracks.
+        - track_uris: List of URIs of the shuffled tracks.
+        - error: Error message if an exception occurs.
+    """
     try:
         sp = get_spotify_client()
 
-        # Get the current playback info
+        # Get current playback info
         current_playback = sp.current_playback()
         if not current_playback or not current_playback.get('item'):
             return jsonify({"error": "No song is currently playing"}), 400
@@ -69,30 +90,36 @@ def trigger():
         current_track = current_playback['item']
         primary_artist = current_track['artists'][0]
 
-        # Get detailed info for the primary artist, including genres.
+        # Retrieve detailed info for the primary artist
         artist_details = sp.artist(primary_artist['id'])
         artist_genres = artist_details.get('genres', [])
 
-        app.logger.info(f"Starting custom radio for {primary_artist['name']} ({artist_genres})")
-
-        # Use the first genre (if available) as the search query; fallback to the artist name.
+        # Use a random genre if available; fallback to the artist's name
         if artist_genres:
-            query = artist_genres[0]
+            query = random.choice(artist_genres)
         else:
             query = primary_artist['name']
 
-        # Perform a search for tracks using the chosen query
-        # Note: The search endpoint doesn't support a dedicated genre filter for tracks,
-        # so we use the genre as a keyword.
-        search_results = sp.search(q=query, type='track', limit=20)
+        # First, perform a lightweight search to get the total number of results
+        initial_search = sp.search(q=query, type='track', limit=1)
+        total_results = initial_search['tracks']['total']
+        # Determine a random offset; ensure we have room to fetch 20 tracks
+        max_offset = max(0, total_results - 20)
+        offset = random.randint(0, max_offset) if max_offset > 0 else 0
+
+        # Fetch a set of 20 tracks using the random offset
+        search_results = sp.search(q=query, type='track', limit=20, offset=offset)
         tracks = search_results.get('tracks', {}).get('items', [])
         track_uris = [track['uri'] for track in tracks]
 
-        # Start playback with the list of tracks gathered from the search.
+        # Shuffle the track URIs to add extra randomness
+        random.shuffle(track_uris)
+
+        # Start playback with the shuffled list of tracks
         sp.start_playback(uris=track_uris)
 
         return jsonify({
-            "message": "Custom song radio started",
+            "message": "Custom shuffled song radio started",
             "seed_track": current_track['name'],
             "seed_artist": primary_artist['name'],
             "search_query": query,
