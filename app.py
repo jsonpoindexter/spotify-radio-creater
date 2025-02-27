@@ -5,6 +5,7 @@ import sys
 import logging
 
 import openai
+import requests
 from flask import Flask, request, jsonify, redirect
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -149,8 +150,10 @@ def trigger_openai():
 
         current_track = current_playback['item']
         primary_artist = current_track['artists'][0]
+        # Spotify Track ID
+        track_id = current_track['id']
 
-        app.logger.info(f"Current track: {current_track['name']} by {primary_artist['name']}")
+        app.logger.info(f"Current track: {current_track['name']} by {primary_artist['name']} (ID: {track_id})")
 
         # Prepare a prompt for OpenAI
         prompt = (
@@ -213,6 +216,76 @@ def trigger_openai():
         return jsonify({
             "message": "Custom radio generated using OpenAI recommendations",
             "openai_recommendations": recommendations,
+            "track_uris": track_uris
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- ReccoBeats Trigger Endpoint ---
+@app.route('/trigger-reccobeats', methods=['POST'])
+def trigger_reccobeats():
+    try:
+        sp = get_spotify_client()
+
+        # Retrieve current playback info from Spotify.
+        current_playback = sp.current_playback()
+        if not current_playback or not current_playback.get('item'):
+            return jsonify({"error": "No song is currently playing"}), 400
+
+        current_track = current_playback['item']
+        primary_artist = current_track['artists'][0]
+        track_name = current_track['name']
+        artist_name = primary_artist['name']
+        track_id = current_track['id']
+
+        # Log the seed info (optional)
+        app.logger.info(f"Current track: {track_name} by {artist_name} (ID: {track_id})")
+
+        # Call the ReccoBeats API using the provided example
+        reccobeats_url = "https://api.reccobeats.com/v1/track/recommendation"
+        params = {
+            "size": 20,
+            "seeds": [track_id] # >= 1, <= 5 List of Track's ReccoBeats ID or Spotify ID.
+        }
+        headers = {
+            'Accept': 'application/json'
+        }
+        # In this example, we do not pass additional parameters.
+        response = requests.get(reccobeats_url, params=params, headers=headers)
+        app.logger.info(f"ReccoBeats API response: {response.status_code} - {response.text}")
+        if response.status_code != 200:
+            return jsonify({
+                "error": f"ReccoBeats API error: {response.status_code}",
+                "response_text": response.text
+            }), 500
+
+        # Parse the JSON recommendations from ReccoBeats.
+        json_response = response.json()
+        # recommendations is under .content key
+        recommendations = json_response.get('content', [])
+        app.logger.info(f"ReccoBeats recommendations: {recommendations}")
+
+        if not isinstance(recommendations, list):
+            return jsonify({"error": "ReccoBeats response JSON is not a list"}), 500
+
+        # For each recommendation, search Spotify to find the track URI.
+        track_uris = []
+        for rec in recommendations:
+            rec_href=rec.get('href', '')
+            track_uris.append(rec_href)
+
+        if not track_uris:
+            return jsonify({"error": "No tracks found from ReccoBeats recommendations"}), 500
+
+        # Shuffle the list for additional randomness.
+        random.shuffle(track_uris)
+
+        # Start playback on the active Spotify device.
+        sp.start_playback(uris=track_uris)
+
+        return jsonify({
+            "message": "Custom radio generated using ReccoBeats recommendations",
+            "reccobeats_recommendations": recommendations,
             "track_uris": track_uris
         })
     except Exception as e:
