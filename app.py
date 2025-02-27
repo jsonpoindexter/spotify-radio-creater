@@ -1,8 +1,10 @@
+import json
 import os
 import random
 import sys
 import logging
 
+import openai
 from flask import Flask, request, jsonify, redirect
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -37,6 +39,12 @@ sp_oauth = SpotifyOAuth(
     redirect_uri=REDIRECT_URI,
     scope=SCOPE
 )
+
+# --- OpenAI API Configuration ---
+openai.api_key = os.getenv("OPENAI_API_KEY", os.environ.get('OPENAI_API_KEY'))
+if not openai.api_key:
+    app.logger.error("OPENAI_API_KEY is not set")
+    sys.exit(1)
 
 def get_spotify_client():
     token_info = sp_oauth.get_cached_token()
@@ -123,6 +131,88 @@ def trigger():
             "seed_track": current_track['name'],
             "seed_artist": primary_artist['name'],
             "search_query": query,
+            "track_uris": track_uris
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- OpenAI-Enhanced Trigger Endpoint ---
+@app.route('/trigger-openai', methods=['POST'])
+def trigger_openai():
+    try:
+        sp = get_spotify_client()
+
+        # Get the current playback info
+        current_playback = sp.current_playback()
+        if not current_playback or not current_playback.get('item'):
+            return jsonify({"error": "No song is currently playing"}), 400
+
+        current_track = current_playback['item']
+        primary_artist = current_track['artists'][0]
+
+        app.logger.info(f"Current track: {current_track['name']} by {primary_artist['name']}")
+
+        # Prepare a prompt for OpenAI
+        prompt = (
+            f"I'm currently listening to '{current_track['name']}' by '{primary_artist['name']}'. "
+            "Can you suggest 20 similar genre / mood (but not mainstream) track recommendations? "
+            "Please provide the answer only as a JSON array of objects, where each object has exactly two keys: "
+            "'track_name' and 'artist'."
+        )
+
+        app.logger.info(f"OpenAI prompt: {prompt}")
+
+        # Call OpenAI API using ChatCompletion
+        openai_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful music expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=600,
+        )
+        response_message = openai_response.choices[0].message.content.strip()
+        app.logger.info(f"OpenAI response: {response_message}")
+
+        # Attempt to parse the JSON response from OpenAI
+        try:
+            recommendations = json.loads(response_message)
+        except Exception as parse_error:
+            return jsonify({
+                "error": "Failed to parse OpenAI response as JSON",
+                "openai_response": response_message,
+                "parse_error": str(parse_error)
+            }), 500
+
+        if not isinstance(recommendations, list):
+            return jsonify({"error": "OpenAI response JSON is not a list"}), 500
+
+
+        app.logger.info(f"OpenAI recommendations: {recommendations}")
+
+        # For each recommendation, use Spotify Search to find the track URI.
+        track_uris = []
+        for rec in recommendations:
+            track_query = f"{rec.get('track_name', '')} {rec.get('artist', '')}"
+            search_result = sp.search(q=track_query, type='track', limit=1)
+            items = search_result.get('tracks', {}).get('items', [])
+            if items:
+                track_uri = items[0]['uri']
+                track_uris.append(track_uri)
+
+        if not track_uris:
+            return jsonify({"error": "No tracks found from OpenAI recommendations"}), 500
+
+        # Shuffle the track URIs for additional randomness
+        random.shuffle(track_uris)
+
+        # Start playback with the collected URIs
+        sp.start_playback(uris=track_uris)
+
+        return jsonify({
+            "message": "Custom radio generated using OpenAI recommendations",
+            "openai_recommendations": recommendations,
             "track_uris": track_uris
         })
     except Exception as e:
